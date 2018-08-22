@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/trentdavies/go.strava" //fork of strava/go.strava
-	loghttp "github.com/motemen/go-loghttp"
+	"github.com/motemen/go-loghttp"
 )
 
 const port = 8080
@@ -60,7 +60,7 @@ func accessToken() string {
 func athleteId() int64 {
 	athleteId := viper.GetInt64(ConfKeyAthleteId)
 	if athleteId == 0 {
-		fmt.Println()
+		fmt.Printf("%s is undefined", ConfKeyAthleteId)
 		os.Exit(1)
 	}
 	return athleteId
