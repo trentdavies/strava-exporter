@@ -7,10 +7,12 @@ import (
 	"os"
 	"log"
 	"strings"
+	"strconv"
 
 	"github.com/spf13/cobra"
-	"github.com/trentdavies/go.strava" //fork of strava/go.strava
 	"github.com/spf13/viper"
+	"github.com/trentdavies/go.strava" //fork of strava/go.strava
+	loghttp "github.com/motemen/go-loghttp"
 )
 
 const port = 8080
@@ -22,17 +24,14 @@ const (
 	ConfKeyClientSecret string = "client-secret"
 	ConfKeyAthleteId    string = "athlete-id"
 	ConfKeyAccessToken  string = "token"
-	ConfEnvPrefix string = "STRAVA"
+	ConfEnvPrefix       string = "STRAVA"
 )
 
 func init() {
-	//allows us to use ENV and cli flags interchangeably
+	//allows us to use ENV and cli flags interchangeably/**/
 	viper.SetEnvPrefix(ConfEnvPrefix)
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	//needed for authenticate workflow
-	strava.ClientId = viper.GetInt(ConfKeyClientId)
-	strava.ClientSecret = viper.GetString(ConfKeyClientSecret)
 }
 
 func main() {
@@ -44,8 +43,9 @@ func main() {
 }
 
 /* Compute the env config name for use in usage/help */
-func envConfigName(cli_flag string) string {
-	return strings.ToUpper(fmt.Sprintf("%s_%s", ConfEnvPrefix, strings.Replace(cli_flag, "-", "_", -1)))
+func envConfigNameHelp(cli_flag string) string {
+	o := strings.ToUpper(fmt.Sprintf("%s_%s", ConfEnvPrefix, strings.Replace(cli_flag, "-", "_", -1)))
+	return fmt.Sprintf("Also settable as env variable: '%s'", o)
 }
 
 func accessToken() string {
@@ -66,6 +66,20 @@ func athleteId() int64 {
 	return athleteId
 }
 
+func stravaClient(debug bool) *strava.Client {
+	var httpClient *http.Client
+	if debug {
+		httpClient = &http.Client{
+			Transport: &loghttp.Transport{},
+		}
+	} else {
+		httpClient = http.DefaultClient
+	}
+
+	client := strava.NewClient(accessToken(), httpClient)
+	return client
+}
+
 func NewStravaImporterCommand() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:     "strava-exporter",
@@ -74,30 +88,44 @@ func NewStravaImporterCommand() *cobra.Command {
 		Example: "",
 		Run:     nil, //output help
 	}
+	rootCmd.PersistentFlags().String(ConfKeyAccessToken, "", fmt.Sprintf("Strava API Token. "+envConfigNameHelp(ConfKeyAccessToken)))
+	rootCmd.PersistentFlags().BoolP("debug", "d", false, "enable debug output")
 	authCmd := &cobra.Command{
 		Use:   "auth",
 		Short: "Retrieve API access token for future calls via web OAuth workflow",
 		Long:  `Starts a webserver that, when accessed in the browser, will authenticate against the Strava API`,
 		Run:   authenticate,
 	}
+	authCmd.PersistentFlags().Int(ConfKeyClientId, 0, "Strava Client ID. "+envConfigNameHelp(ConfKeyClientId))
+	authCmd.PersistentFlags().String(ConfKeyClientSecret, "", "Strava Client Secret. "+envConfigNameHelp(ConfKeyClientSecret))
+	rootCmd.AddCommand(authCmd)
+	getCmd := &cobra.Command{
+		Use:   "get [activity id]",
+		Short: "Get a detailed activity",
+		Args:  cobra.ExactArgs(1),
+		Run:   getActivity,
+	}
+	getCmd.PersistentFlags().BoolP("include-all","a", false, "include all efforts")
+	rootCmd.AddCommand(getCmd)
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "list athlete activities",
 		Run:   listActivities,
 	}
+	listCmd.PersistentFlags().Int(ConfKeyAthleteId, 0, "Strava Athlete id for associated calls. "+envConfigNameHelp(ConfKeyAthleteId))
 	rootCmd.AddCommand(listCmd)
-	rootCmd.AddCommand(authCmd)
-	rootCmd.PersistentFlags().String(ConfKeyAccessToken, "", "Strava access token for use with api calls. Set in env with " + envConfigName(ConfKeyAccessToken))
-	listCmd.PersistentFlags().Int(ConfKeyAthleteId,0, "Strava athlete id for associated calls. Set in env with " + envConfigName(ConfKeyAthleteId))
-	authCmd.PersistentFlags().Int(ConfKeyClientId, 0, "Strava Client ID. Set in env with " + envConfigName(ConfKeyClientId))
-	authCmd.PersistentFlags().String(ConfKeyClientSecret, "", "Strava Client Secret. Set in env with " + envConfigName(ConfKeyClientSecret))
 	viper.BindPFlags(rootCmd.PersistentFlags())
 	viper.BindPFlags(listCmd.PersistentFlags())
 	viper.BindPFlags(authCmd.PersistentFlags())
+	viper.BindPFlags(getCmd.PersistentFlags())
 	return rootCmd
 }
 
 func authenticate(c *cobra.Command, args [] string) {
+	clientId := viper.GetInt(ConfKeyClientId)
+	strava.ClientId = clientId
+	clientSecret := viper.GetString(ConfKeyClientSecret)
+	strava.ClientSecret = clientSecret
 	// define a strava.OAuthAuthenticator to hold state.
 	// The callback url is used to generate an AuthorizationURL.
 	// The RequestClientGenerator can be used to generate an http.RequestClient.
@@ -124,11 +152,14 @@ func authenticate(c *cobra.Command, args [] string) {
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
 }
 
+//type stravaData struct {
+//	summary *strava.ActivitySummary
+//}
+
 func listActivities(c *cobra.Command, args []string) {
-	log.Println("listActivities")
-	accessToken := accessToken()
+	//log.Println("listActivities")
 	athleteId := athleteId()
-	client := strava.NewClient(accessToken)
+	client := stravaClient(viper.GetBool("debug"))
 	results, err := strava.NewAthletesService(client).ListActivities(athleteId).Do()
 	if err != nil {
 		fmt.Println(err)
@@ -137,11 +168,39 @@ func listActivities(c *cobra.Command, args []string) {
 	for _, r := range results {
 		//content, _ := json.MarshalIndent(r, "", " ")
 		//content, _ := json.Marshal(r)
+		//activity := activityDetails(client, r)
+		//activityContent, _ := json.Marshal(activity)
 		fmt.Println(r.Id, r.Name)
+		//fmt.Println(string(activityContent))
 		//fmt.Println(r.Id, r.Name, string(content))
 	}
 }
 
+func getActivity(c *cobra.Command, args []string) {
+	includeAll := viper.GetBool("include-all")
+	activityId, _ := strconv.ParseInt(args[0], 10, 64)
+	client := stravaClient(viper.GetBool("debug"))
+	s := strava.NewActivitiesService(client).Get(activityId)
+	if includeAll {
+		s.IncludeAllEfforts()
+	}
+	result, err := s.Do()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	content, _ := json.MarshalIndent(result, "", " ")
+	fmt.Println(string(content))
+}
+
+func activityDetails(client *strava.Client, a *strava.ActivitySummary) *strava.ActivityDetailed {
+	result, err := strava.NewActivitiesService(client).Get(a.Id).IncludeAllEfforts().Do()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	return result
+}
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	// you should make this a template in your real application
